@@ -37,6 +37,7 @@ Most multi-agent frameworks burn API tokens on coordination. Shogun doesn't.
 | **Parallelism** | Sequential (one at a time) | Parallel nodes (v0.2+) | Limited | **8 independent agents** |
 | **Coordination cost** | API calls per Task | API + infra (Postgres/Redis) | API + CrewAI platform | **Zero** (YAML + tmux) |
 | **Observability** | Claude logs only | LangSmith integration | OpenTelemetry | **Live tmux panes** + dashboard |
+| **Peer review** | None | None | None | **Built-in 3-phase review protocol** |
 | **Skill discovery** | None | None | None | **Bottom-up auto-proposal** |
 | **Setup** | Built into Claude Code | Heavy (infra required) | pip install | Shell scripts |
 
@@ -47,6 +48,8 @@ Most multi-agent frameworks burn API tokens on coordination. Shogun doesn't.
 **Full transparency** — Every agent runs in a visible tmux pane. Every instruction, report, and decision is a plain YAML file you can read, diff, and version-control. No black boxes.
 
 **Battle-tested hierarchy** — The Shogun → Karo → Ashigaru chain of command prevents conflicts by design: clear ownership, dedicated files per agent, event-driven communication, no polling.
+
+**Mandatory peer review** — Every deliverable goes through a 3-phase review protocol. Plans are reviewed before execution, each work phase (design → implement → test) requires approval from a different Ashigaru, and integration plans are reviewed before final assembly. No self-reviews allowed.
 
 ---
 
@@ -101,7 +104,16 @@ Skills grow organically from real work — not from a predefined template librar
 **Communication protocol:**
 - **Downward** (orders): Write YAML → wake target with `tmux send-keys`
 - **Upward** (reports): Write YAML only (no send-keys to avoid interrupting your input)
+- **Review**: Karo assigns review tasks to a different Ashigaru; results flow back through report YAML
 - **Polling**: Forbidden. Event-driven only. Your API bill stays predictable.
+
+**Review protocol (3 phases):**
+
+| Phase | What's reviewed | Reviewer |
+|-------|----------------|----------|
+| Phase 1: Planning | Karo's task decomposition | 1 Ashigaru |
+| Phase 2: Work | Design / Implementation / Test artifacts | Different Ashigaru (no self-review) |
+| Phase 3: Integration | Karo's integration plan | 1 Ashigaru |
 
 **Context persistence (4 layers):**
 
@@ -251,9 +263,21 @@ All 5 Ashigaru research simultaneously. You can watch them work in real time:
   <img src="assets/screenshots/tmux_multiagent_working.png" alt="Ashigaru agents working in parallel" width="700">
 </p>
 
-### 5. Results in dashboard
+### 5. Peer review
 
-Open `dashboard.md` to see aggregated results, skill candidates, and blockers — all maintained by the Karo.
+Each completed phase is reviewed by a **different** Ashigaru before proceeding:
+
+```
+Design done → Peer review → Approved → Implementation starts
+                  ↓
+            Request changes → Fix → Re-review
+```
+
+The Karo assigns reviewers automatically. No self-reviews — the reviewer is always a different agent than the worker.
+
+### 6. Results in dashboard
+
+Open `dashboard.md` to see aggregated results, review status, skill candidates, and blockers — all maintained by the Karo.
 
 ---
 
@@ -344,8 +368,8 @@ multi-agent-shogun/
 │
 ├── queue/                     # Communication (source of truth)
 │   ├── shogun_to_karo.yaml
-│   ├── tasks/ashigaru{1-8}.yaml
-│   └── reports/ashigaru{1-8}_report.yaml
+│   ├── tasks/ashigaru{1-8}.yaml   # Includes phase & review_of fields
+│   └── reports/ashigaru{1-8}_report.yaml  # Includes review_result field
 │
 ├── memory/                    # Memory MCP persistent storage
 ├── dashboard.md               # Human-readable status board

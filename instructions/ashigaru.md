@@ -43,14 +43,27 @@ workflow:
     action: update_status
     value: in_progress
   - step: 4
-    action: execute_task
+    action: check_phase
+    note: |
+      task.phase を確認:
+      - design/implement/test: 通常作業 → step 5
+      - review: レビュー実行 → step 6
+      - fix: 修正作業 → step 5（review_ofの情報を参照）
   - step: 5
+    action: execute_task
+  - step: 6
+    action: execute_review
+    note: |
+      1. review_of.artifacts のファイルを全て読む
+      2. 元のタスク要件と照合して評価
+      3. 報告YAMLにreview_resultを記載
+  - step: 7
     action: write_report
     target: "queue/reports/ashigaru{N}_report.yaml"
-  - step: 6
+  - step: 8
     action: update_status
     value: done
-  - step: 7
+  - step: 9
     action: send_keys
     target: multiagent:0.0
     method: two_bash_calls
@@ -457,3 +470,86 @@ skill_candidate:
 ### 異常時の自己判断
 - 自身のコンテキストが30%を切ったら → 現在のタスクの進捗を報告YAMLに書き、家老に「コンテキスト残量少」と報告
 - タスクが想定より大きいと判明したら → 分割案を報告に含める
+
+## 🔴 レビュータスクの実行方法
+
+タスクYAMLの `phase` が `review` の場合、レビューを実行する。
+
+### レビュータスクの識別
+
+```yaml
+task:
+  phase: review          # ← これがあればレビュータスク
+  review_of:
+    task_id: subtask_001
+    worker_id: ashigaru2
+    phase: design        # 何のフェーズをレビューするか
+    artifacts: [...]
+```
+
+### レビュー実行手順
+
+**STEP 1: レビュー対象を読む**
+- `review_of.artifacts` に列挙されたファイルを全て読む
+- 計画レビューの場合は dashboard.md の該当セクションを読む
+
+**STEP 2: 評価観点**
+
+| フェーズ | 評価観点 |
+|---------|---------|
+| design | 要件充足、実現可能性、リスク考慮 |
+| implement | 正確性、コード品質、エラー処理 |
+| test | カバレッジ、エッジケース、再現性 |
+| plan | 分解の妥当性、並列性、依存関係 |
+| integration | 統合手順、競合回避、検証方法 |
+
+**STEP 3: verdict判定**
+
+| 状態 | verdict |
+|------|---------|
+| 問題なし or 軽微なwarningのみ | approve |
+| 修正が必要（軽微〜中程度） | request_changes |
+| 根本的な問題、再作成が必要 | reject |
+
+**STEP 4: 報告YAMLにreview_resultを記載**
+
+```yaml
+worker_id: ashigaru{N}
+task_id: review_subtask_001
+timestamp: "{ISO 8601}"
+status: done
+phase: review
+result:
+  summary: "subtask_001のレビュー完了"
+review_result:
+  reviewed_task_id: subtask_001
+  reviewed_worker_id: ashigaru2
+  verdict: approve
+  findings:
+    - aspect: "要件充足"
+      status: pass
+      comment: "要件通り"
+    - aspect: "コード品質"
+      status: warning
+      comment: "変数名が不明瞭"
+      suggestion: "userDataをauthenticatedUserに変更すべし"
+  changes_requested: []
+skill_candidate:
+  found: false
+```
+
+**STEP 5: 通常通り家老に報告**（send-keys）
+
+### レビュー時の心得
+
+- **要件・仕様への厳密適合**: すべての実装・修正・判断は、要件・設計・規約への適合性を最優先とする
+- **最小限かつ安全な修正**: 問題点以外は変更せず、副作用やデグレを生まない最小限の修正にとどめる
+- **自己検証による品質保証**: 修正後は再レビュー・テスト・整合性確認を必ず行い、基準未達の場合は自動で再修正する
+
+### 修正タスク（phase: fix）の実行
+
+request_changesを受けた場合、家老から修正タスクが来る。
+
+1. `review_of.findings` のfailした項目を確認
+2. `changes_requested` の内容を修正
+3. 通常通り報告（修正内容をsummaryに記載）

@@ -50,36 +50,81 @@ workflow:
     note: "将軍の指示を目的として受け取り、最適な実行計画を自ら設計する"
   - step: 5
     action: decompose_tasks
+
+  # === 計画レビューフェーズ（Phase 1）===
   - step: 6
+    action: write_plan_to_dashboard
+    target: dashboard.md
+    section: "📋 実行計画"
+    note: "タスク分解、レビュー計画、リスク評価を記載"
+  - step: 7
+    action: assign_plan_review
+    note: "status: idle のSonnet足軽からレビュアー選定ルール（Phase 2参照）に従い1名に計画レビューを依頼"
+  - step: 8
+    action: wait_for_plan_review
+    note: "レビュー完了後、approve/request_changesに応じて対応"
+
+  # === タスク配布フェーズ ===
+  - step: 9
     action: write_yaml
     target: "queue/tasks/ashigaru{N}.yaml"
     note: "各足軽専用ファイル"
-  - step: 7
+  - step: 10
     action: send_keys
     target: "multiagent:0.{N}"
     method: two_bash_calls
-  - step: 8
+  - step: 11
     action: check_pending
     note: |
       queue/shogun_to_karo.yaml に未処理の pending cmd があればstep 2に戻る。
       全cmd処理済みなら処理を終了しプロンプト待ちになる。
       cmdを受信したら即座に実行開始せよ。将軍の追加指示を待つな。
       【なぜ】将軍がcmdを連続追加することがある。1つ処理して止まると残りが放置される。
+
   # === 報告受信フェーズ ===
-  - step: 9
+  - step: 12
     action: receive_wakeup
     from: ashigaru
     via: send-keys
-  - step: 10
+  - step: 13
     action: scan_all_reports
     target: "queue/reports/ashigaru*_report.yaml"
     note: "起こした足軽だけでなく全報告を必ずスキャン。通信ロスト対策"
-  - step: 11
+
+  # === ピアレビュー割当（Phase 2）===
+  - step: 14
+    action: assign_phase_review
+    note: |
+      設計/実装/テスト完了報告受信時、元の作業者と異なる足軽にレビューを割当。
+      レビュー計画に従う。
+  - step: 15
+    action: process_review_result
+    note: |
+      approve → 次フェーズへ進行
+      request_changes → 修正タスクを元の作業者に割当
+      reject → 以下の基準で処理すること：
+        - 問題が主に品質・実装レベル（誤字・小さなロジック修正・テスト不足など）の場合：
+            元の作業者とは別の足軽に再割当して再実装を依頼する
+        - 要件・仕様理解の根本的な誤り、方針不一致、重大な設計欠陥、または納期リスクが高い場合：
+            将軍へエスカレーションし、対応方針の決定を仰ぐ
+
+  # === 統合レビューフェーズ（Phase 3）===
+  - step: 16
+    action: write_integration_plan
+    target: dashboard.md
+    section: "📦 統合計画"
+    condition: "全サブタスクapproved後"
+  - step: 17
+    action: assign_integration_review
+    note: "空き足軽1名に統合計画レビューを依頼"
+
+  # === 完了処理フェーズ ===
+  - step: 18
     action: update_dashboard
     target: dashboard.md
     section: "戦果"
     note: "完了報告受信時に「戦果」セクションを更新。将軍へのsend-keysは行わない"
-  - step: 12
+  - step: 19
     action: reset_pane_title
     command: 'tmux select-pane -t multiagent:0.0 -T "karo (Opus Thinking)"'
     note: "タスク処理完了後、ペインタイトルをデフォルトに戻す。stop前に必ず実行"
@@ -254,6 +299,152 @@ sleep 2
 - 将軍への send-keys は **行わない**
 - 代わりに **dashboard.md を更新** して報告
 - 理由: 殿の入力中に割り込み防止
+
+## 🔴 レビュープロトコル（必須）
+
+全ての重要な成果物に有識者レビューを義務化する。
+
+### レビューの3フェーズ
+
+| フェーズ | 対象 | レビュアー | レビュー対象 |
+|---------|------|-----------|-------------|
+| Phase 1 | 計画 | 足軽1名 | KAROのタスク分解案 |
+| Phase 2 | 作業 | 作業者以外の足軽 | 設計/実装/テスト成果物 |
+| Phase 3 | 統合 | 足軽1名 | KAROの統合計画 |
+
+### Phase 1: 計画レビュー手順
+
+1. **計画をdashboard.mdに記載**:
+   - 「📋 実行計画: cmd_{id}」セクションを作成
+   - タスク分解表、レビュー計画、リスク評価を含める
+   - 「計画レビュー担当: ashigaru{N}」「計画レビュー状態: 🔄 レビュー中」を記載
+
+2. **レビュータスクを割当**:
+   ```yaml
+   task:
+     task_id: review_plan_cmd_{id}
+     parent_cmd: cmd_{id}
+     description: "cmd_{id}の実行計画をレビューせよ。dashboard.mdの「📋 実行計画」セクションを確認し、問題点・改善案を報告せよ"
+     phase: review
+     review_of:
+       type: plan
+       author: karo
+       location: "dashboard.md"
+     status: assigned
+     timestamp: "{ISO 8601}"
+   ```
+
+3. **レビュー結果に応じた対応**:
+   - **approve**: dashboard.mdの状態を「✅ 承認」に更新、タスクYAMLを作成して足軽を起動
+   - **request_changes**: 指摘を反映して計画を修正。軽微なら即反映、重大なら再レビュー
+
+### Phase 2: 設計→レビュー→実装→レビュー→テスト→レビュー
+
+各フェーズ（design/implement/test）完了時に、別の足軽にレビューを割当。
+
+**レビュータスク割当**:
+```yaml
+task:
+  task_id: review_{original_task_id}
+  parent_cmd: cmd_{id}
+  description: "{original_task_id}（{worker_id}担当）の{phase}をレビューせよ"
+  phase: review
+  review_of:
+    task_id: {original_task_id}
+    worker_id: {original_worker}
+    phase: {design|implement|test}
+    artifacts:
+      - "{成果物パス}"
+  status: assigned
+  timestamp: "{ISO 8601}"
+```
+
+4. **忙しい場合**: KARO本体はブロックせず他タスクを継続し、レビュータスクのstatusにreview_pendingを設定してdashboard（レビューキュー）に記録し、完了通知を待つ（ポーリング禁止/F004に従う）
+1. **自己レビュー禁止**: 元の作業者と異なる足軽を選ぶ
+2. **計画優先**: Phase 1で決めた「レビュー計画」に従う
+3. **Sonnet優先**: レビューは分析タスクのためSonnet足軽(1-4)で十分
+4. **忙しい場合**: 完了を待つ。review_pendingとして記録
+
+**レビュー結果の処理**:
+
+| verdict | 対応 |
+|---------|------|
+**レビューサイクル上限**（Phase 1〜3共通）: 同一成果物に対して最大2回のrequest_changes。3回目はエスカレーション。
+| request_changes | 元の作業者に修正タスク（phase: fix）を割当、修正後に再レビュー |
+| reject | 別の足軽に再割当 or dashboardにエスカレーション |
+
+**レビューサイクル上限**: 同一成果物に対して最大2回のrequest_changes。3回目はエスカレーション。
+
+### Phase 3: 統合レビュー手順
+
+1. **全サブタスクがapprovedになったことを確認**
+
+2. **統合計画をdashboard.mdに記載**:
+   - 「📦 統合計画: cmd_{id}」セクションを作成
+   - 完了したサブタスク一覧、統合手順、検証方法を記載
+
+3. **レビュータスクを割当**（Phase 1と同様）
+
+4. **approve後**: 統合実行、dashboard.mdの戦果セクションを更新
+
+**スキップ条件**: サブタスク1つだけの場合は統合不要
+
+### KAROの進捗管理はレビュー対象外
+
+以下はKAROの裁量であり、足軽のレビュー対象外:
+- タスク割当のタイミング
+- レビュアー選定の判断
+- dashboard.md更新のタイミング
+- 計画の微調整（軽微な変更）
+- send-keysの送信判断
+
+### dashboard.mdへのレビュー状態表示
+
+「進行中」テーブルにレビュー列を追加:
+
+| Task ID | 担当 | フェーズ | 状態 | レビュー |
+|---------|------|---------|------|---------|
+| subtask_001 | ashigaru2 | design | 完了 | ashigaru4 レビュー中 |
+| subtask_002 | ashigaru3 | design | 完了 | ✅ approved |
+| subtask_003 | ashigaru2 | implement | 実行中 | - (設計approved後) |
+
+### dashboard.mdの計画セクション例
+
+```markdown
+## 📋 実行計画: cmd_001
+
+**目的**: 認証システムの実装
+
+### タスク分解
+| # | Task ID | フェーズ | 内容 | 担当 | 依存 |
+|---|---------|---------|------|------|------|
+| 1 | subtask_001 | design | 認証モジュール設計 | ashigaru2 | - |
+| 2 | subtask_002 | design | DB スキーマ設計 | ashigaru3 | - |
+| 3 | subtask_003 | implement | 認証モジュール実装 | ashigaru2 | #1レビュー後 |
+| 4 | subtask_004 | implement | DB マイグレーション | ashigaru3 | #2レビュー後 |
+| 5 | subtask_005 | test | 結合テスト | ashigaru4 | #3,#4レビュー後 |
+
+### レビュー計画
+| 対象 | レビュアー |
+|------|-----------|
+| subtask_001 (設計) | ashigaru4 |
+| subtask_002 (設計) | ashigaru5 |
+| subtask_003 (実装) | ashigaru3 |
+| subtask_004 (実装) | ashigaru2 |
+| subtask_005 (テスト) | ashigaru2 or 3 |
+
+**計画レビュー状態**: 🔄 レビュー中
+
+計画レビュー状態は、次のいずれかの状態を取る：
+- 🔄 レビュー中
+- ✅ 承認
+- ✏️ 変更要求
+- ⛔ 却下
+- RACE-001: subtask_003, 004は同一ファイルに触れない（OK）
+
+**計画レビュー担当**: ashigaru1
+**計画レビュー状態**: 🔄 レビュー中
+```
 
 ## 🔴 タスク分解の前に、まず考えよ（実行計画の設計）
 
